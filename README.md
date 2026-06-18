@@ -35,18 +35,20 @@ this repo whenever you open it.
      like `https://<your-username>.github.io/<repo-name>/`. Bookmark this —
      it's your permanent dashboard link, open it in any browser anytime.
 
-5. **Get the data.json URL and paste it into the page**:
-   - Use jsdelivr's GitHub CDN mirror (more reliably cached/served than
-     raw.githubusercontent.com): 
-     `https://cdn.jsdelivr.net/gh/<your-username>/<repo-name>@main/data.json`
-   - Open your GitHub Pages URL from step 4, paste this into the "Connect
-     your data source" field, click "Load data". It will remember this URL
-     for next time (saved in your browser).
+5. **Connect the page to your data**:
+   - Open your GitHub Pages URL from step 4.
+   - In the "Connect your data source" field, just enter your repo as
+     **`owner/repo`** (e.g. `Yushian7/sp500-dashboard`) and click "Load
+     data". You do NOT need to paste a long jsdelivr URL anymore.
+   - The dashboard automatically asks GitHub for the latest commit and
+     loads the freshest `data.json` every time — no cache issues, no manual
+     URL/SHA updates ever. It remembers your repo for next time.
+   - (A full jsdelivr or GitHub URL still works if you paste one, for
+     backward compatibility.)
 
 6. **Done.** Bookmark the GitHub Pages URL. The data workflow runs
-   automatically every Saturday and keeps `data.json` fresh; the page
-   always pulls the latest version when you open it (or click the refresh
-   icon).
+   automatically every Saturday; the page always auto-resolves and loads
+   the newest committed data when you open it or hit refresh.
 
 ## Re-running manually anytime
 

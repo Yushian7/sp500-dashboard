@@ -121,9 +121,9 @@
   <div id="setup-screen">
     <div class="panel">
       <p style="font-size: 14px; font-weight: 500; margin: 0 0 8px;">Connect your data source</p>
-      <p style="font-size: 13px; color: var(--text-secondary); margin: 0 0 12px;">Paste the jsdelivr URL for your data.json file. It looks like:<br>https://cdn.jsdelivr.net/gh/username/repo@main/data.json</p>
+      <p style="font-size: 13px; color: var(--text-secondary); margin: 0 0 12px;">Enter your GitHub repo as <strong>owner/repo</strong> (e.g. Yushian7/sp500-dashboard). The dashboard automatically loads the latest data each time — no cache issues, no manual updates. A full jsdelivr or GitHub URL also works.</p>
       <div style="display: flex; gap: 8px;">
-        <input type="text" id="data-url" placeholder="https://cdn.jsdelivr.net/gh/..." style="flex: 1;">
+        <input type="text" id="data-url" placeholder="owner/repo" style="flex: 1;">
         <button id="load-btn">Load data</button>
       </div>
       <p id="load-status" style="font-size: 12px; color: var(--text-tertiary); margin: 8px 0 0;"></p>
@@ -339,25 +339,78 @@ function populateSectors() {
   sel.innerHTML = '<option value="ALL">All sectors</option>' + sectors.map(sec => '<option value="' + sec + '">' + sec + '</option>').join('');
 }
 
-async function loadData(url) {
-  const statusEl = document.getElementById('load-status');
-  statusEl.textContent = 'Loading...';
+// Parse the user's input into {owner, repo}. Accepts:
+//   - "owner/repo"
+//   - "https://github.com/owner/repo" (and /blob/... variants)
+//   - "https://cdn.jsdelivr.net/gh/owner/repo@.../data.json"
+//   - "https://raw.githubusercontent.com/owner/repo/..."
+function parseRepo(input) {
+  let s = input.trim();
+  // jsdelivr gh form
+  let m = s.match(/cdn\.jsdelivr\.net\/gh\/([^\/@]+)\/([^\/@]+)/);
+  if (m) return { owner: m[1], repo: m[2] };
+  // raw.githubusercontent
+  m = s.match(/raw\.githubusercontent\.com\/([^\/]+)\/([^\/]+)/);
+  if (m) return { owner: m[1], repo: m[2] };
+  // github.com
+  m = s.match(/github\.com\/([^\/]+)\/([^\/]+)/);
+  if (m) return { owner: m[1], repo: m[2].replace(/\.git$/, '') };
+  // bare owner/repo
+  m = s.match(/^([^\/\s]+)\/([^\/\s]+)$/);
+  if (m) return { owner: m[1], repo: m[2] };
+  return null;
+}
+
+async function resolveFreshUrl(input) {
+  const parsed = parseRepo(input);
+  if (!parsed) {
+    // Not a repo reference — treat the input as a direct URL and just
+    // append a timestamp to bust browser cache (best effort).
+    const sep = input.includes('?') ? '&' : '?';
+    return input + sep + 'cb=' + Date.now();
+  }
+  const { owner, repo } = parsed;
+  // Ask GitHub for the latest commit SHA on the default branch (main).
+  const apiUrl = 'https://api.github.com/repos/' + owner + '/' + repo + '/commits/main';
   try {
-    const res = await fetch(url, { cache: "no-store" });
+    const res = await fetch(apiUrl, { cache: 'no-store', headers: { 'Accept': 'application/vnd.github.sha' } });
+    if (!res.ok) throw new Error('status ' + res.status);
+    const sha = (await res.text()).trim();
+    if (!/^[0-9a-f]{7,40}$/i.test(sha)) throw new Error('unexpected SHA response');
+    // SHA-pinned jsdelivr URLs are immutable → never served stale.
+    return 'https://cdn.jsdelivr.net/gh/' + owner + '/' + repo + '@' + sha + '/data.json';
+  } catch (apiErr) {
+    // Fallback (e.g. GitHub API rate-limited): use @main with a timestamp.
+    // jsdelivr may serve a slightly stale copy for up to ~12h, but the
+    // timestamp at least defeats the browser cache.
+    console.warn('SHA resolve failed, falling back to @main:', apiErr.message);
+    return 'https://cdn.jsdelivr.net/gh/' + owner + '/' + repo + '@main/data.json?cb=' + Date.now();
+  }
+}
+
+async function loadData(input) {
+  const statusEl = document.getElementById('load-status');
+  statusEl.textContent = 'Resolving latest data...';
+  try {
+    const freshUrl = await resolveFreshUrl(input);
+    statusEl.textContent = 'Loading...';
+    const res = await fetch(freshUrl, { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const json = await res.json();
     STOCKS = json.stocks || [];
     GENERATED_AT = json.generated_at;
     if (STOCKS.length === 0) throw new Error('No stocks found in data file');
 
-    localStorage.setItem(STORAGE_KEY, url);
+    // Persist the ORIGINAL input (owner/repo), not the SHA URL, so the
+    // next visit re-resolves to whatever the newest commit is by then.
+    localStorage.setItem(STORAGE_KEY, input);
     populateSectors();
     document.getElementById('setup-screen').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
     document.getElementById('data-age').textContent = GENERATED_AT ? ('Data as of ' + new Date(GENERATED_AT).toLocaleDateString()) : '';
     renderList();
   } catch (e) {
-    statusEl.textContent = 'Could not load data: ' + e.message + '. Check the URL and that data.json exists in your repo.';
+    statusEl.textContent = 'Could not load data: ' + e.message;
   }
 }
 
