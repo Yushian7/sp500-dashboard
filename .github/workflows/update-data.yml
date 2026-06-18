@@ -1,0 +1,37 @@
+name: Update S&P 500 Dashboard Data
+
+# Runs automatically on a schedule, and lets you trigger it manually too.
+on:
+  schedule:
+    # Every Saturday at 06:00 UTC (~11:30 AM IST) — markets closed, data settled.
+    - cron: "0 6 * * 6"
+  workflow_dispatch: {}   # adds a "Run workflow" button on GitHub for manual runs
+
+permissions:
+  contents: write   # needed so the workflow can commit data.json back to the repo
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install yfinance pandas lxml
+
+      - name: Run data fetch script
+        run: python fetch_data.py
+
+      - name: Commit updated data.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data.json
+          git diff --quiet --cached || git commit -m "Auto-update data.json [skip ci]"
+          git push
