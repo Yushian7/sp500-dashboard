@@ -71,6 +71,16 @@
   }
   #dashboard .controls { display: flex; gap: 8px; margin-bottom: 1rem; flex-wrap: wrap; align-items: center; }
   #search { flex: 1; min-width: 200px; }
+  .filter-panel {
+    background: var(--bg-secondary); border-radius: var(--radius-lg);
+    padding: 1rem 1.25rem; margin-bottom: 1rem;
+  }
+  .filter-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .filter-row:last-of-type { margin-bottom: 4px; }
+  .filter-label { font-size: 13px; color: var(--text-secondary); min-width: 100px; }
+  .filter-row input[type="range"] { flex: 1; height: 36px; }
+  .filter-value { font-size: 13px; font-weight: 500; min-width: 28px; text-align: right; }
+  #reset-filters { font-size: 12px; height: 30px; padding: 4px 10px; }
   .meta-row { display: flex; gap: 16px; margin-bottom: 1rem; font-size: 12px; color: var(--text-secondary); }
   .stock-row {
     display: flex; align-items: center; gap: 12px; padding: 12px;
@@ -133,6 +143,26 @@
       </select>
       <button id="refresh-btn" aria-label="Refresh data"><i class="ti ti-refresh" aria-hidden="true"></i></button>
     </div>
+
+    <div class="filter-panel">
+      <div class="filter-row">
+        <span class="filter-label">Min durability</span>
+        <input type="range" id="min-durability" min="0" max="100" value="0" step="1">
+        <span class="filter-value" id="min-durability-val">0</span>
+      </div>
+      <div class="filter-row">
+        <span class="filter-label">Min valuation</span>
+        <input type="range" id="min-valuation" min="0" max="100" value="0" step="1">
+        <span class="filter-value" id="min-valuation-val">0</span>
+      </div>
+      <div class="filter-row">
+        <span class="filter-label">Min momentum</span>
+        <input type="range" id="min-momentum" min="0" max="100" value="0" step="1">
+        <span class="filter-value" id="min-momentum-val">0</span>
+      </div>
+      <button id="reset-filters" style="margin-top: 4px;">Reset filters</button>
+    </div>
+
     <div class="meta-row">
       <span id="result-count">0 stocks</span>
       <span id="data-age"></span>
@@ -185,11 +215,21 @@ function renderList() {
   const search = document.getElementById('search').value.trim().toLowerCase();
   const sector = document.getElementById('sector-filter').value;
   const sortBy = document.getElementById('sort-by').value;
+  const minDurability = Number(document.getElementById('min-durability').value);
+  const minValuation = Number(document.getElementById('min-valuation').value);
+  const minMomentum = Number(document.getElementById('min-momentum').value);
 
   let filtered = STOCKS.filter(s => {
     const matchesSearch = !search || s.ticker.toLowerCase().includes(search) || (s.name || '').toLowerCase().includes(search);
     const matchesSector = sector === 'ALL' || s.sector === sector;
-    return matchesSearch && matchesSector;
+    // Stocks with a null/missing score for a metric you've set a threshold
+    // on are excluded (can't confirm they pass the bar), but if the
+    // threshold is left at 0 (default/unused) missing values don't get
+    // penalized — only kicks in once you actually raise a slider.
+    const passDurability = minDurability === 0 || (s.durability_score !== null && s.durability_score >= minDurability);
+    const passValuation = minValuation === 0 || (s.valuation_score !== null && s.valuation_score >= minValuation);
+    const passMomentum = minMomentum === 0 || (s.momentum_score !== null && s.momentum_score >= minMomentum);
+    return matchesSearch && matchesSector && passDurability && passValuation && passMomentum;
   });
 
   filtered.sort((a, b) => {
@@ -199,7 +239,7 @@ function renderList() {
     return bv - av;
   });
 
-  document.getElementById('result-count').textContent = filtered.length + ' stocks';
+  document.getElementById('result-count').textContent = filtered.length + ' stocks' + ((minDurability || minValuation || minMomentum) ? ' (filtered)' : '');
 
   const list = document.getElementById('stock-list');
   list.innerHTML = filtered.slice(0, 60).map(s => {
@@ -323,6 +363,24 @@ document.getElementById('data-url').addEventListener('keypress', (e) => {
 document.getElementById('search').addEventListener('input', renderList);
 document.getElementById('sector-filter').addEventListener('change', renderList);
 document.getElementById('sort-by').addEventListener('change', renderList);
+
+['min-durability', 'min-valuation', 'min-momentum'].forEach(id => {
+  const slider = document.getElementById(id);
+  const valLabel = document.getElementById(id + '-val');
+  slider.addEventListener('input', () => {
+    valLabel.textContent = slider.value;
+    renderList();
+  });
+});
+
+document.getElementById('reset-filters').addEventListener('click', () => {
+  ['min-durability', 'min-valuation', 'min-momentum'].forEach(id => {
+    document.getElementById(id).value = 0;
+    document.getElementById(id + '-val').textContent = '0';
+  });
+  renderList();
+});
+
 document.getElementById('refresh-btn').addEventListener('click', () => {
   const url = document.getElementById('data-url').value.trim() || localStorage.getItem(STORAGE_KEY);
   if (url) loadData(url);
