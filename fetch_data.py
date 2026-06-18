@@ -64,6 +64,79 @@ def safe_get(d: dict, key, default=None):
     return val
 
 
+def compute_multiyear_metrics(t: "yf.Ticker") -> dict:
+    """
+    Pull annual income-statement and cashflow history and derive the
+    multi-period 'durability over time' signals Trendlyne emphasizes:
+      - revenue CAGR (multi-year growth)
+      - earnings (net income) CAGR
+      - revenue growth consistency (how many years grew YoY)
+      - earnings positivity (how many years net income was positive)
+      - FCF positivity streak (how many years FCF was positive)
+      - earnings stability (inverse of coefficient of variation)
+    All values are None when the underlying statements aren't available,
+    so scoring downstream can skip them cleanly.
+    """
+    out = {
+        "revenue_cagr": None,
+        "earnings_cagr": None,
+        "revenue_growth_consistency": None,
+        "earnings_positive_years": None,
+        "fcf_positive_years": None,
+        "earnings_stability": None,
+        "years_of_data": None,
+    }
+    try:
+        fin = t.financials  # annual income statement, columns = years (newest first)
+        cf = t.cashflow      # annual cashflow statement
+
+        def row(df, *names):
+            if df is None or df.empty:
+                return None
+            for n in names:
+                if n in df.index:
+                    s = df.loc[n].dropna()
+                    if not s.empty:
+                        # reverse so oldest -> newest for trend math
+                        return list(s.values)[::-1]
+            return None
+
+        revenue = row(fin, "Total Revenue", "TotalRevenue", "Operating Revenue")
+        net_income = row(fin, "Net Income", "NetIncome", "Net Income Common Stockholders")
+        fcf = row(cf, "Free Cash Flow", "FreeCashFlow")
+
+        if revenue and len(revenue) >= 2:
+            out["years_of_data"] = len(revenue)
+            first, last = revenue[0], revenue[-1]
+            n = len(revenue) - 1
+            if first and first > 0 and last and last > 0:
+                out["revenue_cagr"] = ((last / first) ** (1 / n) - 1) * 100
+            # consistency: fraction of year-over-year periods that grew
+            ups = sum(1 for i in range(1, len(revenue)) if revenue[i] > revenue[i - 1])
+            out["revenue_growth_consistency"] = ups / (len(revenue) - 1) * 100
+
+        if net_income and len(net_income) >= 2:
+            out["earnings_positive_years"] = sum(1 for x in net_income if x > 0) / len(net_income) * 100
+            first, last = net_income[0], net_income[-1]
+            n = len(net_income) - 1
+            if first and first > 0 and last and last > 0:
+                out["earnings_cagr"] = ((last / first) ** (1 / n) - 1) * 100
+            # stability = 1 - (stdev/|mean|), clamped to 0-100; higher = steadier
+            mean = sum(net_income) / len(net_income)
+            if mean != 0:
+                var = sum((x - mean) ** 2 for x in net_income) / len(net_income)
+                cv = (var ** 0.5) / abs(mean)
+                out["earnings_stability"] = max(0.0, min(100.0, (1 - cv) * 100))
+
+        if fcf and len(fcf) >= 1:
+            out["fcf_positive_years"] = sum(1 for x in fcf if x > 0) / len(fcf) * 100
+
+    except Exception as e:
+        print(f"[warn] multiyear metrics failed: {e}")
+
+    return out
+
+
 def fetch_ticker_raw(ticker: str) -> dict | None:
     try:
         t = yf.Ticker(ticker)
@@ -102,6 +175,9 @@ def fetch_ticker_raw(ticker: str) -> dict | None:
         week52_high = float(hist["High"].max())
         pct_from_52w_high = (last_price / week52_high - 1) * 100 if week52_high else None
 
+        # Multi-year durability signals (Trendlyne models earnings "over time")
+        my = compute_multiyear_metrics(t)
+
         raw = {
             "ticker": ticker,
             "name": safe_get(info, "shortName", ticker),
@@ -129,6 +205,15 @@ def fetch_ticker_raw(ticker: str) -> dict | None:
             "revenue_growth": safe_get(info, "revenueGrowth"),
             "return_on_equity": safe_get(info, "returnOnEquity"),
             "profit_margin": safe_get(info, "profitMargins"),
+
+            # Multi-year durability signals (modeled over time)
+            "revenue_cagr": my["revenue_cagr"],
+            "earnings_cagr": my["earnings_cagr"],
+            "revenue_growth_consistency": my["revenue_growth_consistency"],
+            "earnings_positive_years": my["earnings_positive_years"],
+            "fcf_positive_years": my["fcf_positive_years"],
+            "earnings_stability": my["earnings_stability"],
+            "years_of_data": my["years_of_data"],
 
             # Momentum raw inputs
             "ma50": ma50,
@@ -169,8 +254,34 @@ def percentile_rank_series(series: pd.Series, higher_is_better: bool) -> pd.Seri
     return ranked
 
 
+def apply_eligibility(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Replicate Trendlyne's published eligibility rules for the durability
+    score (the ones that are objective and computable from our data).
+    Ineligible stocks get a null durability_score rather than a misleading
+    number. Note: Trendlyne's revenue/market-cap thresholds are in INR
+    crore for Indian stocks; for US stocks we apply analogous USD floors.
+    """
+    def eligible(row):
+        # market cap floor (USD ~ $100M, analogous to their Rs 50cr India floor)
+        mc = row.get("market_cap")
+        if mc is not None and mc < 100_000_000:
+            return False
+        return True
+
+    df["durability_eligible"] = df.apply(eligible, axis=1)
+    return df
+
+
 def compute_scores(df: pd.DataFrame) -> pd.DataFrame:
-    # ---- Durability sub-scores ----
+    # ===== Durability =====
+    # Trendlyne models durability "over time" with emphasis on consistent
+    # growth, stable earnings/cashflows and low debt. We therefore split
+    # durability into two halves and weight them roughly equally:
+    #   (a) current financial-health snapshot
+    #   (b) multi-year growth consistency & stability
+    #
+    # --- (a) snapshot health sub-scores ---
     df["s_debt_to_equity"] = percentile_rank_series(df["debt_to_equity"], higher_is_better=False)
     df["s_current_ratio"] = percentile_rank_series(df["current_ratio"], higher_is_better=True)
     df["s_roe"] = percentile_rank_series(df["return_on_equity"], higher_is_better=True)
@@ -178,19 +289,49 @@ def compute_scores(df: pd.DataFrame) -> pd.DataFrame:
     df["s_fcf_positive"] = df["free_cashflow"].apply(
         lambda x: 100.0 if (x is not None and x > 0) else (0.0 if x is not None else float("nan"))
     )
-
-    durability_components = [
+    snapshot_components = [
         "s_debt_to_equity", "s_current_ratio", "s_roe", "s_profit_margin", "s_fcf_positive"
     ]
-    df["durability_score"] = df[durability_components].mean(axis=1, skipna=True).round(1)
+    df["durability_snapshot"] = df[snapshot_components].mean(axis=1, skipna=True)
 
-    # ---- Valuation sub-scores (lower multiple = better = higher score) ----
+    # --- (b) multi-year consistency / trend sub-scores ---
+    # Some of these are already 0-100 "fraction of years" style metrics;
+    # CAGR figures get percentile-ranked across the universe.
+    df["s_rev_cagr"] = percentile_rank_series(df["revenue_cagr"], higher_is_better=True)
+    df["s_eps_cagr"] = percentile_rank_series(df["earnings_cagr"], higher_is_better=True)
+    # already-normalized 0-100 metrics used directly:
+    df["s_rev_consistency"] = df["revenue_growth_consistency"]
+    df["s_earnings_positive"] = df["earnings_positive_years"]
+    df["s_fcf_streak"] = df["fcf_positive_years"]
+    df["s_earnings_stability"] = df["earnings_stability"]
+    trend_components = [
+        "s_rev_cagr", "s_eps_cagr", "s_rev_consistency",
+        "s_earnings_positive", "s_fcf_streak", "s_earnings_stability"
+    ]
+    df["durability_trend"] = df[trend_components].mean(axis=1, skipna=True)
+
+    # --- combine: 45% snapshot, 55% multi-year (tilts toward "over time") ---
+    def blend_durability(row):
+        snap = row["durability_snapshot"]
+        trend = row["durability_trend"]
+        snap_ok = pd.notnull(snap)
+        trend_ok = pd.notnull(trend)
+        if snap_ok and trend_ok:
+            return 0.45 * snap + 0.55 * trend
+        if snap_ok:
+            return snap
+        if trend_ok:
+            return trend
+        return float("nan")
+
+    df["durability_score"] = df.apply(blend_durability, axis=1).round(1)
+
+    # ===== Valuation (lower multiple = better = higher score) =====
     df["s_pe"] = percentile_rank_series(df["trailing_pe"], higher_is_better=False)
     df["s_pb"] = percentile_rank_series(df["price_to_book"], higher_is_better=False)
     df["s_ev_ebitda"] = percentile_rank_series(df["ev_to_ebitda"], higher_is_better=False)
     df["s_peg"] = percentile_rank_series(df["peg_ratio"], higher_is_better=False)
     df["s_p_fcf"] = percentile_rank_series(df["price_to_fcf"], higher_is_better=False)
-
     valuation_components = ["s_pe", "s_pb", "s_ev_ebitda", "s_peg", "s_p_fcf"]
     df["valuation_score"] = df[valuation_components].mean(axis=1, skipna=True).round(1)
 
@@ -224,6 +365,10 @@ def compute_scores(df: pd.DataFrame) -> pd.DataFrame:
     ]
     df["momentum_score"] = df[momentum_components].mean(axis=1, skipna=True).round(1)
 
+    # Apply durability eligibility: ineligible -> null score
+    if "durability_eligible" in df.columns:
+        df.loc[~df["durability_eligible"], "durability_score"] = float("nan")
+
     return df
 
 
@@ -247,15 +392,21 @@ def main():
     df = pd.DataFrame(records)
     print(f"Successfully fetched {len(df)} / {len(tickers)} tickers.")
 
+    df = apply_eligibility(df)
     df = compute_scores(df)
 
     output_cols = [
         "ticker", "name", "sector", "industry", "price", "market_cap",
         "durability_score", "valuation_score", "momentum_score",
+        "durability_snapshot", "durability_trend",
         "trailing_pe", "forward_pe", "price_to_book", "ev_to_ebitda", "peg_ratio", "price_to_fcf",
         "debt_to_equity", "current_ratio", "return_on_equity", "profit_margin", "free_cashflow",
+        "revenue_cagr", "earnings_cagr", "revenue_growth_consistency",
+        "earnings_positive_years", "fcf_positive_years", "earnings_stability", "years_of_data",
         "ma50", "ma200", "rsi14", "return_3m", "return_6m", "pct_from_52w_high",
         "s_debt_to_equity", "s_current_ratio", "s_roe", "s_profit_margin", "s_fcf_positive",
+        "s_rev_cagr", "s_eps_cagr", "s_rev_consistency", "s_earnings_positive",
+        "s_fcf_streak", "s_earnings_stability",
         "s_pe", "s_pb", "s_ev_ebitda", "s_peg", "s_p_fcf",
         "s_above_ma50", "s_above_ma200", "s_rsi", "s_return_3m", "s_return_6m", "s_near_52w_high",
         "fetched_at",

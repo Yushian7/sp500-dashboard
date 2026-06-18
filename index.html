@@ -296,11 +296,19 @@ function showDetail(ticker) {
     '</div>' +
     '<div style="margin-bottom: 12px;">' +
       '<div style="font-size: 13px; font-weight: 500; margin-bottom: 4px;">Durability breakdown</div>' +
+      '<div style="font-size: 11px; color: var(--text-tertiary); margin-bottom: 6px;">Current financial health</div>' +
       subMetricRow('Debt / equity', fmtNum(s.debt_to_equity, 1), s.s_debt_to_equity) +
       subMetricRow('Current ratio', fmtNum(s.current_ratio, 2), s.s_current_ratio) +
       subMetricRow('Return on equity', s.return_on_equity != null ? (s.return_on_equity * 100).toFixed(1) + '%' : '—', s.s_roe) +
       subMetricRow('Profit margin', s.profit_margin != null ? (s.profit_margin * 100).toFixed(1) + '%' : '—', s.s_profit_margin) +
       subMetricRow('Free cash flow positive', s.free_cashflow != null ? (s.free_cashflow > 0 ? 'Yes' : 'No') : '—', s.s_fcf_positive) +
+      '<div style="font-size: 11px; color: var(--text-tertiary); margin: 8px 0 6px;">Multi-year consistency &amp; trend' + (s.years_of_data ? ' (' + s.years_of_data + 'y)' : '') + '</div>' +
+      subMetricRow('Revenue CAGR', s.revenue_cagr != null ? s.revenue_cagr.toFixed(1) + '%' : '—', s.s_rev_cagr) +
+      subMetricRow('Earnings CAGR', s.earnings_cagr != null ? s.earnings_cagr.toFixed(1) + '%' : '—', s.s_eps_cagr) +
+      subMetricRow('Revenue growth consistency', s.revenue_growth_consistency != null ? s.revenue_growth_consistency.toFixed(0) + '%' : '—', s.s_rev_consistency) +
+      subMetricRow('Profitable years', s.earnings_positive_years != null ? s.earnings_positive_years.toFixed(0) + '%' : '—', s.s_earnings_positive) +
+      subMetricRow('FCF-positive years', s.fcf_positive_years != null ? s.fcf_positive_years.toFixed(0) + '%' : '—', s.s_fcf_streak) +
+      subMetricRow('Earnings stability', s.earnings_stability != null ? s.earnings_stability.toFixed(0) : '—', s.s_earnings_stability) +
     '</div>' +
     '<div style="margin-bottom: 12px;">' +
       '<div style="font-size: 13px; font-weight: 500; margin-bottom: 4px;">Valuation breakdown</div>' +
