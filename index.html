@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S&P 500 Durability / Valuation / Momentum Dashboard</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/2.44.0/iconfont/tabler-icons.min.css">
+<style>
+  :root {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f5f4f0;
+    --bg-tertiary: #ececec;
+    --text-primary: #18181a;
+    --text-secondary: #5f5e5a;
+    --text-tertiary: #888780;
+    --border-tertiary: rgba(0,0,0,0.12);
+    --border-secondary: rgba(0,0,0,0.25);
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --teal-50: #E1F5EE; --teal-800: #085041;
+    --amber-50: #FAEEDA; --amber-800: #633806;
+    --coral-50: #FAECE7; --coral-800: #712B13;
+    --gray-50: #F1EFE8; --gray-800: #444441;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg-primary: #1c1c1e;
+      --bg-secondary: #262626;
+      --bg-tertiary: #2e2e2e;
+      --text-primary: #f0f0ee;
+      --text-secondary: #b4b2a9;
+      --text-tertiary: #888780;
+      --border-tertiary: rgba(255,255,255,0.12);
+      --border-secondary: rgba(255,255,255,0.25);
+      --teal-50: #085041; --teal-800: #E1F5EE;
+      --amber-50: #633806; --amber-800: #FAEEDA;
+      --coral-50: #712B13; --coral-800: #FAECE7;
+      --gray-50: #444441; --gray-800: #F1EFE8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    margin: 0;
+    padding: 24px 16px 64px;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 4px; }
+  .subtitle { font-size: 13px; color: var(--text-secondary); margin: 0 0 20px; }
+  input, select, button {
+    font-family: inherit;
+    font-size: 14px;
+    border: 0.5px solid var(--border-tertiary);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    padding: 8px 12px;
+    height: 36px;
+  }
+  input:hover, select:hover, button:hover { border-color: var(--border-secondary); }
+  button { cursor: pointer; background: var(--bg-primary); }
+  button:active { transform: scale(0.98); }
+  #setup-screen .panel {
+    background: var(--bg-secondary);
+    border-radius: var(--radius-lg);
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+  #dashboard .controls { display: flex; gap: 8px; margin-bottom: 1rem; flex-wrap: wrap; align-items: center; }
+  #search { flex: 1; min-width: 200px; }
+  .meta-row { display: flex; gap: 16px; margin-bottom: 1rem; font-size: 12px; color: var(--text-secondary); }
+  .stock-row {
+    display: flex; align-items: center; gap: 12px; padding: 12px;
+    border: 0.5px solid var(--border-tertiary); border-radius: var(--radius-lg);
+    margin-bottom: 8px; cursor: pointer; background: var(--bg-primary);
+  }
+  .stock-row:hover { border-color: var(--border-secondary); }
+  .score-badge { border-radius: var(--radius-md); padding: 6px 10px; flex: 1; text-align: center; }
+  .score-teal { background: var(--teal-50); color: var(--teal-800); }
+  .score-amber { background: var(--amber-50); color: var(--amber-800); }
+  .score-coral { background: var(--coral-50); color: var(--coral-800); }
+  .score-gray { background: var(--gray-50); color: var(--gray-800); }
+  .score-label { font-size: 11px; opacity: 0.85; }
+  .score-value { font-size: 18px; font-weight: 500; }
+  #detail-modal .panel {
+    background: var(--bg-secondary); border-radius: var(--radius-lg);
+    padding: 1.25rem; margin-top: 1rem; position: relative;
+  }
+  .submetric-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 0; border-bottom: 0.5px solid var(--border-tertiary);
+  }
+  .submetric-row span.val { font-size: 13px; }
+  .submetric-row span.lbl { font-size: 13px; color: var(--text-secondary); }
+  .submetric-score {
+    font-size: 11px; font-weight: 500; padding: 2px 6px; border-radius: var(--radius-md);
+    min-width: 28px; text-align: center; display: inline-block;
+  }
+  #close-detail { position: absolute; top: 12px; right: 12px; }
+  footer { text-align: center; font-size: 12px; color: var(--text-tertiary); margin-top: 32px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>S&amp;P 500 dashboard</h1>
+  <p class="subtitle">Durability, valuation and momentum scores, percentile-ranked across the S&amp;P 500</p>
+
+  <div id="setup-screen">
+    <div class="panel">
+      <p style="font-size: 14px; font-weight: 500; margin: 0 0 8px;">Connect your data source</p>
+      <p style="font-size: 13px; color: var(--text-secondary); margin: 0 0 12px;">Paste the jsdelivr URL for your data.json file. It looks like:<br>https://cdn.jsdelivr.net/gh/username/repo@main/data.json</p>
+      <div style="display: flex; gap: 8px;">
+        <input type="text" id="data-url" placeholder="https://cdn.jsdelivr.net/gh/..." style="flex: 1;">
+        <button id="load-btn">Load data</button>
+      </div>
+      <p id="load-status" style="font-size: 12px; color: var(--text-tertiary); margin: 8px 0 0;"></p>
+    </div>
+  </div>
+
+  <div id="dashboard" style="display: none;">
+    <div class="controls">
+      <input type="text" id="search" placeholder="Search ticker or company name...">
+      <select id="sector-filter"></select>
+      <select id="sort-by">
+        <option value="durability_score">Sort: Durability</option>
+        <option value="valuation_score">Sort: Valuation</option>
+        <option value="momentum_score">Sort: Momentum</option>
+        <option value="ticker">Sort: Ticker A-Z</option>
+        <option value="market_cap">Sort: Market cap</option>
+      </select>
+      <button id="refresh-btn" aria-label="Refresh data"><i class="ti ti-refresh" aria-hidden="true"></i></button>
+    </div>
+    <div class="meta-row">
+      <span id="result-count">0 stocks</span>
+      <span id="data-age"></span>
+    </div>
+    <div id="stock-list"></div>
+  </div>
+
+  <div id="detail-modal" style="display: none;">
+    <div class="panel">
+      <button id="close-detail" aria-label="Close details"><i class="ti ti-x" aria-hidden="true"></i></button>
+      <div id="detail-content"></div>
+    </div>
+  </div>
+
+  <footer>Data refreshes weekly via GitHub Actions. Scores are percentile ranks, not absolute thresholds.</footer>
+</div>
+
+<script>
+let STOCKS = [];
+let GENERATED_AT = null;
+const STORAGE_KEY = "sp500_dashboard_data_url";
+
+function scoreClass(score) {
+  if (score === null || score === undefined || Number.isNaN(score)) return 'score-gray';
+  if (score >= 66) return 'score-teal';
+  if (score >= 40) return 'score-amber';
+  return 'score-coral';
+}
+
+function fmtNum(v, decimals) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  return Number(v).toFixed(decimals !== undefined ? decimals : 1);
+}
+
+function fmtMarketCap(v) {
+  if (!v) return '—';
+  if (v >= 1e12) return '$' + (v / 1e12).toFixed(2) + 'T';
+  if (v >= 1e9) return '$' + (v / 1e9).toFixed(1) + 'B';
+  if (v >= 1e6) return '$' + (v / 1e6).toFixed(0) + 'M';
+  return '$' + v;
+}
+
+function scoreBadge(label, score) {
+  const cls = scoreClass(score);
+  const display = (score === null || score === undefined || Number.isNaN(score)) ? '—' : Math.round(score);
+  return '<div class="score-badge ' + cls + '"><div class="score-label">' + label + '</div><div class="score-value">' + display + '</div></div>';
+}
+
+function renderList() {
+  const search = document.getElementById('search').value.trim().toLowerCase();
+  const sector = document.getElementById('sector-filter').value;
+  const sortBy = document.getElementById('sort-by').value;
+
+  let filtered = STOCKS.filter(s => {
+    const matchesSearch = !search || s.ticker.toLowerCase().includes(search) || (s.name || '').toLowerCase().includes(search);
+    const matchesSector = sector === 'ALL' || s.sector === sector;
+    return matchesSearch && matchesSector;
+  });
+
+  filtered.sort((a, b) => {
+    if (sortBy === 'ticker') return a.ticker.localeCompare(b.ticker);
+    const av = a[sortBy] === null || a[sortBy] === undefined ? -Infinity : a[sortBy];
+    const bv = b[sortBy] === null || b[sortBy] === undefined ? -Infinity : b[sortBy];
+    return bv - av;
+  });
+
+  document.getElementById('result-count').textContent = filtered.length + ' stocks';
+
+  const list = document.getElementById('stock-list');
+  list.innerHTML = filtered.slice(0, 60).map(s => {
+    return '<div class="stock-row" data-ticker="' + s.ticker + '">' +
+      '<div style="min-width: 130px;">' +
+        '<div style="font-weight: 500; font-size: 14px;">' + s.ticker + '</div>' +
+        '<div style="font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px;">' + (s.name || '') + '</div>' +
+      '</div>' +
+      '<div style="display: flex; gap: 8px; flex: 1;">' +
+        scoreBadge('Durability', s.durability_score) +
+        scoreBadge('Valuation', s.valuation_score) +
+        scoreBadge('Momentum', s.momentum_score) +
+      '</div>' +
+      '<div style="text-align: right; min-width: 80px;">' +
+        '<div style="font-size: 14px; font-weight: 500;">$' + fmtNum(s.price, 2) + '</div>' +
+        '<div style="font-size: 11px; color: var(--text-secondary);">' + fmtMarketCap(s.market_cap) + '</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  if (filtered.length > 60) {
+    list.innerHTML += '<p style="font-size: 12px; color: var(--text-tertiary); text-align: center; padding: 8px;">Showing top 60 of ' + filtered.length + ' — refine search to narrow further</p>';
+  }
+
+  list.querySelectorAll('.stock-row').forEach(row => {
+    row.addEventListener('click', () => showDetail(row.getAttribute('data-ticker')));
+  });
+}
+
+function subMetricRow(label, value, scoreVal) {
+  const cls = scoreClass(scoreVal);
+  return '<div class="submetric-row"><span class="lbl">' + label + '</span>' +
+    '<div style="display: flex; align-items: center; gap: 8px;">' +
+      '<span class="val">' + value + '</span>' +
+      '<span class="submetric-score ' + cls + '">' + (scoreVal === null || scoreVal === undefined || Number.isNaN(scoreVal) ? '—' : Math.round(scoreVal)) + '</span>' +
+    '</div></div>';
+}
+
+function showDetail(ticker) {
+  const s = STOCKS.find(x => x.ticker === ticker);
+  if (!s) return;
+
+  const html =
+    '<div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; padding-right: 32px;">' +
+      '<div><div style="font-size: 16px; font-weight: 500;">' + s.ticker + ' — ' + (s.name || '') + '</div>' +
+      '<div style="font-size: 12px; color: var(--text-secondary);">' + (s.sector || '') + ' / ' + (s.industry || '') + '</div></div>' +
+      '<div style="text-align: right;"><div style="font-size: 18px; font-weight: 500;">$' + fmtNum(s.price, 2) + '</div>' +
+      '<div style="font-size: 12px; color: var(--text-secondary);">' + fmtMarketCap(s.market_cap) + '</div></div>' +
+    '</div>' +
+    '<div style="display: flex; gap: 8px; margin-bottom: 16px;">' +
+      scoreBadge('Durability', s.durability_score) +
+      scoreBadge('Valuation', s.valuation_score) +
+      scoreBadge('Momentum', s.momentum_score) +
+    '</div>' +
+    '<div style="margin-bottom: 12px;">' +
+      '<div style="font-size: 13px; font-weight: 500; margin-bottom: 4px;">Durability breakdown</div>' +
+      subMetricRow('Debt / equity', fmtNum(s.debt_to_equity, 1), s.s_debt_to_equity) +
+      subMetricRow('Current ratio', fmtNum(s.current_ratio, 2), s.s_current_ratio) +
+      subMetricRow('Return on equity', s.return_on_equity != null ? (s.return_on_equity * 100).toFixed(1) + '%' : '—', s.s_roe) +
+      subMetricRow('Profit margin', s.profit_margin != null ? (s.profit_margin * 100).toFixed(1) + '%' : '—', s.s_profit_margin) +
+      subMetricRow('Free cash flow positive', s.free_cashflow != null ? (s.free_cashflow > 0 ? 'Yes' : 'No') : '—', s.s_fcf_positive) +
+    '</div>' +
+    '<div style="margin-bottom: 12px;">' +
+      '<div style="font-size: 13px; font-weight: 500; margin-bottom: 4px;">Valuation breakdown</div>' +
+      subMetricRow('Trailing P/E', fmtNum(s.trailing_pe, 1), s.s_pe) +
+      subMetricRow('Price / book', fmtNum(s.price_to_book, 2), s.s_pb) +
+      subMetricRow('EV / EBITDA', fmtNum(s.ev_to_ebitda, 1), s.s_ev_ebitda) +
+      subMetricRow('PEG ratio', fmtNum(s.peg_ratio, 2), s.s_peg) +
+      subMetricRow('Price / free cash flow', fmtNum(s.price_to_fcf, 1), s.s_p_fcf) +
+    '</div>' +
+    '<div>' +
+      '<div style="font-size: 13px; font-weight: 500; margin-bottom: 4px;">Momentum breakdown</div>' +
+      subMetricRow('Above 50-day MA', s.ma50 != null ? (s.price > s.ma50 ? 'Yes' : 'No') : '—', s.s_above_ma50) +
+      subMetricRow('Above 200-day MA', s.ma200 != null ? (s.price > s.ma200 ? 'Yes' : 'No') : '—', s.s_above_ma200) +
+      subMetricRow('RSI (14-day)', fmtNum(s.rsi14, 1), s.s_rsi) +
+      subMetricRow('3-month return', s.return_3m != null ? s.return_3m.toFixed(1) + '%' : '—', s.s_return_3m) +
+      subMetricRow('6-month return', s.return_6m != null ? s.return_6m.toFixed(1) + '%' : '—', s.s_return_6m) +
+      subMetricRow('% from 52w high', s.pct_from_52w_high != null ? s.pct_from_52w_high.toFixed(1) + '%' : '—', s.s_near_52w_high) +
+    '</div>';
+
+  document.getElementById('detail-content').innerHTML = html;
+  document.getElementById('detail-modal').style.display = 'block';
+  document.getElementById('detail-modal').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function populateSectors() {
+  const sectors = Array.from(new Set(STOCKS.map(s => s.sector).filter(Boolean))).sort();
+  const sel = document.getElementById('sector-filter');
+  sel.innerHTML = '<option value="ALL">All sectors</option>' + sectors.map(sec => '<option value="' + sec + '">' + sec + '</option>').join('');
+}
+
+async function loadData(url) {
+  const statusEl = document.getElementById('load-status');
+  statusEl.textContent = 'Loading...';
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    STOCKS = json.stocks || [];
+    GENERATED_AT = json.generated_at;
+    if (STOCKS.length === 0) throw new Error('No stocks found in data file');
+
+    localStorage.setItem(STORAGE_KEY, url);
+    populateSectors();
+    document.getElementById('setup-screen').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+    document.getElementById('data-age').textContent = GENERATED_AT ? ('Data as of ' + new Date(GENERATED_AT).toLocaleDateString()) : '';
+    renderList();
+  } catch (e) {
+    statusEl.textContent = 'Could not load data: ' + e.message + '. Check the URL and that data.json exists in your repo.';
+  }
+}
+
+document.getElementById('load-btn').addEventListener('click', () => {
+  const url = document.getElementById('data-url').value.trim();
+  if (url) loadData(url);
+});
+document.getElementById('data-url').addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') document.getElementById('load-btn').click();
+});
+document.getElementById('search').addEventListener('input', renderList);
+document.getElementById('sector-filter').addEventListener('change', renderList);
+document.getElementById('sort-by').addEventListener('change', renderList);
+document.getElementById('refresh-btn').addEventListener('click', () => {
+  const url = document.getElementById('data-url').value.trim() || localStorage.getItem(STORAGE_KEY);
+  if (url) loadData(url);
+});
+document.getElementById('close-detail').addEventListener('click', () => {
+  document.getElementById('detail-modal').style.display = 'none';
+});
+
+window.addEventListener('DOMContentLoaded', () => {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) {
+    document.getElementById('data-url').value = saved;
+    loadData(saved);
+  }
+});
+</script>
+</body>
+</html>
