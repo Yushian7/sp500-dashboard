@@ -116,7 +116,7 @@
 <body>
 <div class="wrap">
   <h1>S&amp;P 500 dashboard</h1>
-  <p class="subtitle">Durability, valuation and momentum scores, percentile-ranked across the S&amp;P 500</p>
+  <p class="subtitle">Find durable businesses trading at cheap valuations. Quality-Value score combines durability (incl. Piotroski F &amp; Altman Z from SEC filings) with valuation.</p>
 
   <div id="setup-screen">
     <div class="panel">
@@ -135,6 +135,7 @@
       <input type="text" id="search" placeholder="Search ticker or company name...">
       <select id="sector-filter"></select>
       <select id="sort-by">
+        <option value="quality_value_score">Sort: Quality-Value (durable + cheap)</option>
         <option value="durability_score">Sort: Durability</option>
         <option value="valuation_score">Sort: Valuation</option>
         <option value="momentum_score">Sort: Momentum</option>
@@ -145,6 +146,11 @@
     </div>
 
     <div class="filter-panel">
+      <div class="filter-row">
+        <span class="filter-label">Min quality-value</span>
+        <input type="range" id="min-qv" min="0" max="100" value="0" step="1">
+        <span class="filter-value" id="min-qv-val">0</span>
+      </div>
       <div class="filter-row">
         <span class="filter-label">Min durability</span>
         <input type="range" id="min-durability" min="0" max="100" value="0" step="1">
@@ -215,6 +221,7 @@ function renderList() {
   const search = document.getElementById('search').value.trim().toLowerCase();
   const sector = document.getElementById('sector-filter').value;
   const sortBy = document.getElementById('sort-by').value;
+  const minQv = Number(document.getElementById('min-qv').value);
   const minDurability = Number(document.getElementById('min-durability').value);
   const minValuation = Number(document.getElementById('min-valuation').value);
   const minMomentum = Number(document.getElementById('min-momentum').value);
@@ -222,14 +229,11 @@ function renderList() {
   let filtered = STOCKS.filter(s => {
     const matchesSearch = !search || s.ticker.toLowerCase().includes(search) || (s.name || '').toLowerCase().includes(search);
     const matchesSector = sector === 'ALL' || s.sector === sector;
-    // Stocks with a null/missing score for a metric you've set a threshold
-    // on are excluded (can't confirm they pass the bar), but if the
-    // threshold is left at 0 (default/unused) missing values don't get
-    // penalized — only kicks in once you actually raise a slider.
+    const passQv = minQv === 0 || (s.quality_value_score !== null && s.quality_value_score >= minQv);
     const passDurability = minDurability === 0 || (s.durability_score !== null && s.durability_score >= minDurability);
     const passValuation = minValuation === 0 || (s.valuation_score !== null && s.valuation_score >= minValuation);
     const passMomentum = minMomentum === 0 || (s.momentum_score !== null && s.momentum_score >= minMomentum);
-    return matchesSearch && matchesSector && passDurability && passValuation && passMomentum;
+    return matchesSearch && matchesSector && passQv && passDurability && passValuation && passMomentum;
   });
 
   filtered.sort((a, b) => {
@@ -239,21 +243,25 @@ function renderList() {
     return bv - av;
   });
 
-  document.getElementById('result-count').textContent = filtered.length + ' stocks' + ((minDurability || minValuation || minMomentum) ? ' (filtered)' : '');
+  document.getElementById('result-count').textContent = filtered.length + ' stocks' + ((minQv || minDurability || minValuation || minMomentum) ? ' (filtered)' : '');
 
   const list = document.getElementById('stock-list');
   list.innerHTML = filtered.slice(0, 60).map(s => {
     return '<div class="stock-row" data-ticker="' + s.ticker + '">' +
-      '<div style="min-width: 130px;">' +
+      '<div style="min-width: 120px;">' +
         '<div style="font-weight: 500; font-size: 14px;">' + s.ticker + '</div>' +
-        '<div style="font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px;">' + (s.name || '') + '</div>' +
+        '<div style="font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px;">' + (s.name || '') + '</div>' +
       '</div>' +
-      '<div style="display: flex; gap: 8px; flex: 1;">' +
+      '<div class="score-badge ' + scoreClass(s.quality_value_score) + '" style="min-width: 56px; flex: 0 0 auto;" title="Quality-Value: durable business at a cheap price">' +
+        '<div class="score-label">Q-V</div>' +
+        '<div class="score-value">' + (s.quality_value_score == null || Number.isNaN(s.quality_value_score) ? '—' : Math.round(s.quality_value_score)) + '</div>' +
+      '</div>' +
+      '<div style="display: flex; gap: 6px; flex: 1;">' +
         scoreBadge('Durability', s.durability_score) +
         scoreBadge('Valuation', s.valuation_score) +
         scoreBadge('Momentum', s.momentum_score) +
       '</div>' +
-      '<div style="text-align: right; min-width: 80px;">' +
+      '<div style="text-align: right; min-width: 76px;">' +
         '<div style="font-size: 14px; font-weight: 500;">$' + fmtNum(s.price, 2) + '</div>' +
         '<div style="font-size: 11px; color: var(--text-secondary);">' + fmtMarketCap(s.market_cap) + '</div>' +
       '</div>' +
@@ -290,6 +298,10 @@ function showDetail(ticker) {
       '<div style="font-size: 12px; color: var(--text-secondary);">' + fmtMarketCap(s.market_cap) + '</div></div>' +
     '</div>' +
     '<div style="display: flex; gap: 8px; margin-bottom: 16px;">' +
+      '<div class="score-badge ' + scoreClass(s.quality_value_score) + '" style="flex: 1; text-align: center;" title="Durable business at a cheap price">' +
+        '<div class="score-label">Quality-Value</div>' +
+        '<div class="score-value">' + (s.quality_value_score == null || Number.isNaN(s.quality_value_score) ? '—' : Math.round(s.quality_value_score)) + '</div>' +
+      '</div>' +
       scoreBadge('Durability', s.durability_score) +
       scoreBadge('Valuation', s.valuation_score) +
       scoreBadge('Momentum', s.momentum_score) +
@@ -309,6 +321,10 @@ function showDetail(ticker) {
       subMetricRow('Profitable years', s.earnings_positive_years != null ? s.earnings_positive_years.toFixed(0) + '%' : '—', s.s_earnings_positive) +
       subMetricRow('FCF-positive years', s.fcf_positive_years != null ? s.fcf_positive_years.toFixed(0) + '%' : '—', s.s_fcf_streak) +
       subMetricRow('Earnings stability', s.earnings_stability != null ? s.earnings_stability.toFixed(0) : '—', s.s_earnings_stability) +
+      '<div style="font-size: 11px; color: var(--text-tertiary); margin: 8px 0 6px;">Earnings quality &amp; solvency (SEC filings)</div>' +
+      subMetricRow('Piotroski F-Score', s.piotroski_f != null ? s.piotroski_f + ' / 9' : '—', s.s_piotroski) +
+      subMetricRow('Altman Z-Score', s.altman_z != null ? s.altman_z.toFixed(2) + (s.altman_z > 3 ? ' (safe)' : s.altman_z < 1.8 ? ' (distress)' : ' (grey)') : '—', s.s_altman) +
+      subMetricRow('Accruals ratio', s.accruals_ratio != null ? (s.accruals_ratio * 100).toFixed(1) + '%' : '—', s.s_accruals) +
     '</div>' +
     '<div style="margin-bottom: 12px;">' +
       '<div style="font-size: 13px; font-weight: 500; margin-bottom: 4px;">Valuation breakdown</div>' +
@@ -425,7 +441,7 @@ document.getElementById('search').addEventListener('input', renderList);
 document.getElementById('sector-filter').addEventListener('change', renderList);
 document.getElementById('sort-by').addEventListener('change', renderList);
 
-['min-durability', 'min-valuation', 'min-momentum'].forEach(id => {
+['min-qv', 'min-durability', 'min-valuation', 'min-momentum'].forEach(id => {
   const slider = document.getElementById(id);
   const valLabel = document.getElementById(id + '-val');
   slider.addEventListener('input', () => {
@@ -435,7 +451,7 @@ document.getElementById('sort-by').addEventListener('change', renderList);
 });
 
 document.getElementById('reset-filters').addEventListener('click', () => {
-  ['min-durability', 'min-valuation', 'min-momentum'].forEach(id => {
+  ['min-qv', 'min-durability', 'min-valuation', 'min-momentum'].forEach(id => {
     document.getElementById(id).value = 0;
     document.getElementById(id + '-val').textContent = '0';
   });

@@ -64,6 +64,151 @@ def safe_get(d: dict, key, default=None):
     return val
 
 
+# ---------------------------------------------------------------------------
+# SEC EDGAR integration (free, keyless) for Piotroski F-Score, Altman Z-Score,
+# and an accruals-based earnings-quality flag. These power a value-trap-aware
+# quality dimension that yfinance alone can't provide.
+# ---------------------------------------------------------------------------
+
+SEC_HEADERS = {"User-Agent": "sp500-dashboard research contact@example.com"}
+_CIK_MAP = None
+
+
+def load_cik_map() -> dict:
+    """Ticker -> 10-digit zero-padded CIK, from SEC's official mapping file."""
+    global _CIK_MAP
+    if _CIK_MAP is not None:
+        return _CIK_MAP
+    try:
+        req = urllib.request.Request(
+            "https://www.sec.gov/files/company_tickers.json", headers=SEC_HEADERS
+        )
+        data = json.loads(urllib.request.urlopen(req, timeout=30).read())
+        m = {}
+        for v in data.values():
+            m[str(v["ticker"]).upper()] = str(v["cik_str"]).zfill(10)
+        _CIK_MAP = m
+        print(f"Loaded {len(m)} ticker->CIK mappings from SEC.")
+    except Exception as e:
+        print(f"[warn] could not load CIK map: {e}")
+        _CIK_MAP = {}
+    return _CIK_MAP
+
+
+def _annual_values(facts: dict, tags: list[str], max_years: int = 2) -> list:
+    """
+    Return up to `max_years` most-recent annual values (10-K / full-year) for
+    the first matching XBRL tag. Values are ordered newest-first.
+    """
+    usgaap = facts.get("facts", {}).get("us-gaap", {})
+    for tag in tags:
+        if tag not in usgaap:
+            continue
+        units = usgaap[tag].get("units", {})
+        for unit_key in ("USD", "shares", "USD/shares", "pure"):
+            if unit_key not in units:
+                continue
+            annual = {}
+            for r in units[unit_key]:
+                if r.get("form") == "10-K" and r.get("fp") == "FY" and "fy" in r:
+                    fy = r["fy"]
+                    if fy not in annual or r.get("filed", "") > annual[fy].get("filed", ""):
+                        annual[fy] = r
+            if annual:
+                years = sorted(annual.keys(), reverse=True)
+                return [annual[y].get("val") for y in years[:max_years]]
+    return []
+
+
+def compute_edgar_scores(ticker: str, market_cap) -> dict:
+    """Fetch EDGAR companyfacts once and compute Piotroski F, Altman Z, accruals."""
+    out = {"piotroski_f": None, "altman_z": None, "accruals_ratio": None}
+    cik_map = load_cik_map()
+    cik = cik_map.get(ticker.upper())
+    if not cik:
+        return out
+    try:
+        url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+        req = urllib.request.Request(url, headers=SEC_HEADERS)
+        facts = json.loads(urllib.request.urlopen(req, timeout=40).read())
+    except Exception as e:
+        print(f"[warn] EDGAR facts failed for {ticker} (CIK {cik}): {e}")
+        return out
+
+    def v(tags, n=2):
+        return _annual_values(facts, tags, n)
+
+    net_income = v(["NetIncomeLoss"])
+    op_cf = v(["NetCashProvidedByUsedInOperatingActivities",
+               "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"])
+    total_assets = v(["Assets"])
+    cur_assets = v(["AssetsCurrent"])
+    cur_liab = v(["LiabilitiesCurrent"])
+    total_liab = v(["Liabilities"])
+    lt_debt = v(["LongTermDebtNoncurrent", "LongTermDebt"])
+    revenue = v(["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
+                 "SalesRevenueNet"])
+    gross_profit = v(["GrossProfit"])
+    shares = v(["CommonStockSharesOutstanding",
+                "WeightedAverageNumberOfDilutedSharesOutstanding",
+                "WeightedAverageNumberOfSharesOutstandingBasic"])
+    retained = v(["RetainedEarningsAccumulatedDeficit"])
+    ebit = v(["OperatingIncomeLoss"])
+
+    # ---- Piotroski F-Score (0-9) ----
+    try:
+        if len(total_assets) >= 2 and total_assets[0] and total_assets[1]:
+            score = 0
+            if net_income and net_income[0] is not None and net_income[0] / total_assets[0] > 0:
+                score += 1
+            if op_cf and op_cf[0] is not None and op_cf[0] > 0:
+                score += 1
+            if (len(net_income) >= 2 and net_income[0] is not None and net_income[1] is not None
+                    and (net_income[0] / total_assets[0]) > (net_income[1] / total_assets[1])):
+                score += 1
+            if (op_cf and net_income and op_cf[0] is not None and net_income[0] is not None
+                    and op_cf[0] > net_income[0]):
+                score += 1
+            if (len(lt_debt) >= 2 and lt_debt[0] is not None and lt_debt[1] is not None
+                    and (lt_debt[0] / total_assets[0]) <= (lt_debt[1] / total_assets[1])):
+                score += 1
+            if (len(cur_assets) >= 2 and len(cur_liab) >= 2 and cur_liab[0] and cur_liab[1]
+                    and (cur_assets[0] / cur_liab[0]) > (cur_assets[1] / cur_liab[1])):
+                score += 1
+            if len(shares) >= 2 and shares[0] is not None and shares[1] is not None and shares[0] <= shares[1] * 1.01:
+                score += 1
+            if (len(gross_profit) >= 2 and len(revenue) >= 2 and revenue[0] and revenue[1]
+                    and (gross_profit[0] / revenue[0]) > (gross_profit[1] / revenue[1])):
+                score += 1
+            if (len(revenue) >= 2 and (revenue[0] / total_assets[0]) > (revenue[1] / total_assets[1])):
+                score += 1
+            out["piotroski_f"] = score
+
+        if (op_cf and net_income and total_assets and op_cf[0] is not None
+                and net_income[0] is not None and total_assets[0]):
+            out["accruals_ratio"] = (net_income[0] - op_cf[0]) / total_assets[0]
+    except Exception as e:
+        print(f"[warn] Piotroski calc error {ticker}: {e}")
+
+    # ---- Altman Z-Score ----
+    # Z = 1.2*(WC/TA) + 1.4*(RE/TA) + 3.3*(EBIT/TA) + 0.6*(MktCap/TL) + 1.0*(Rev/TA)
+    try:
+        ta = total_assets[0] if total_assets else None
+        if ta and market_cap and total_liab and total_liab[0]:
+            wc = (cur_assets[0] - cur_liab[0]) if (cur_assets and cur_liab) else None
+            re = retained[0] if retained else None
+            eb = ebit[0] if ebit else None
+            rev = revenue[0] if revenue else None
+            if None not in (wc, re, eb, rev):
+                z = (1.2 * (wc / ta) + 1.4 * (re / ta) + 3.3 * (eb / ta)
+                     + 0.6 * (market_cap / total_liab[0]) + 1.0 * (rev / ta))
+                out["altman_z"] = round(z, 2)
+    except Exception as e:
+        print(f"[warn] Altman calc error {ticker}: {e}")
+
+    return out
+
+
 def compute_multiyear_metrics(t: "yf.Ticker") -> dict:
     """
     Pull annual income-statement and cashflow history and derive the
@@ -178,6 +323,10 @@ def fetch_ticker_raw(ticker: str) -> dict | None:
         # Multi-year durability signals (Trendlyne models earnings "over time")
         my = compute_multiyear_metrics(t)
 
+        # SEC EDGAR quality scores (Piotroski F, Altman Z, accruals)
+        mc_for_edgar = safe_get(info, "marketCap")
+        edgar = compute_edgar_scores(ticker, mc_for_edgar)
+
         raw = {
             "ticker": ticker,
             "name": safe_get(info, "shortName", ticker),
@@ -214,6 +363,11 @@ def fetch_ticker_raw(ticker: str) -> dict | None:
             "fcf_positive_years": my["fcf_positive_years"],
             "earnings_stability": my["earnings_stability"],
             "years_of_data": my["years_of_data"],
+
+            # SEC EDGAR quality scores
+            "piotroski_f": edgar["piotroski_f"],
+            "altman_z": edgar["altman_z"],
+            "accruals_ratio": edgar["accruals_ratio"],
 
             # Momentum raw inputs
             "ma50": ma50,
@@ -310,19 +464,29 @@ def compute_scores(df: pd.DataFrame) -> pd.DataFrame:
     ]
     df["durability_trend"] = df[trend_components].mean(axis=1, skipna=True)
 
-    # --- combine: 45% snapshot, 55% multi-year (tilts toward "over time") ---
+    # --- (c) EDGAR quality sub-scores (Piotroski 0-9 -> 0-100; Altman ranked) ---
+    df["s_piotroski"] = df["piotroski_f"].apply(
+        lambda x: (x / 9.0 * 100) if (x is not None and not (isinstance(x, float) and math.isnan(x))) else float("nan")
+    )
+    df["s_altman"] = percentile_rank_series(df["altman_z"], higher_is_better=True)
+    # accruals: smaller/more-negative is better earnings quality (lower = better)
+    df["s_accruals"] = percentile_rank_series(df["accruals_ratio"], higher_is_better=False)
+    quality_components = ["s_piotroski", "s_altman", "s_accruals"]
+    df["durability_quality"] = df[quality_components].mean(axis=1, skipna=True)
+
+    # --- combine: 35% snapshot, 40% multi-year trend, 25% EDGAR quality ---
     def blend_durability(row):
-        snap = row["durability_snapshot"]
-        trend = row["durability_trend"]
-        snap_ok = pd.notnull(snap)
-        trend_ok = pd.notnull(trend)
-        if snap_ok and trend_ok:
-            return 0.45 * snap + 0.55 * trend
-        if snap_ok:
-            return snap
-        if trend_ok:
-            return trend
-        return float("nan")
+        parts, weights = [], []
+        if pd.notnull(row["durability_snapshot"]):
+            parts.append(row["durability_snapshot"]); weights.append(0.35)
+        if pd.notnull(row["durability_trend"]):
+            parts.append(row["durability_trend"]); weights.append(0.40)
+        if pd.notnull(row["durability_quality"]):
+            parts.append(row["durability_quality"]); weights.append(0.25)
+        if not parts:
+            return float("nan")
+        wsum = sum(weights)
+        return sum(p * w for p, w in zip(parts, weights)) / wsum
 
     df["durability_score"] = df.apply(blend_durability, axis=1).round(1)
 
@@ -365,6 +529,19 @@ def compute_scores(df: pd.DataFrame) -> pd.DataFrame:
     ]
     df["momentum_score"] = df[momentum_components].mean(axis=1, skipna=True).round(1)
 
+    # ===== Composite Quality-Value score =====
+    # Directly surfaces the "durable business at a cheap price" intersection.
+    # 60% durability (quality) + 40% valuation (cheapness). A stock must score
+    # on BOTH to rank highly — a cheap junk stock or an expensive great stock
+    # both get pulled down. This is the headline score for the stated goal.
+    def quality_value(row):
+        d, val = row["durability_score"], row["valuation_score"]
+        if pd.notnull(d) and pd.notnull(val):
+            return round(0.60 * d + 0.40 * val, 1)
+        return float("nan")
+
+    df["quality_value_score"] = df.apply(quality_value, axis=1)
+
     # Apply durability eligibility: ineligible -> null score
     if "durability_eligible" in df.columns:
         df.loc[~df["durability_eligible"], "durability_score"] = float("nan")
@@ -380,6 +557,9 @@ def main():
     tickers = get_sp500_tickers()
     print(f"Fetching data for {len(tickers)} tickers...")
 
+    # Preload SEC ticker->CIK map once so per-stock EDGAR calls are fast.
+    load_cik_map()
+
     records = []
     for i, tk in enumerate(tickers):
         raw = fetch_ticker_raw(tk)
@@ -387,7 +567,10 @@ def main():
             records.append(raw)
         if (i + 1) % 25 == 0:
             print(f"  ...{i + 1}/{len(tickers)} done")
-        time.sleep(0.3)  # be polite to the API, avoid throttling
+        # Each stock now makes a yfinance call set + one SEC EDGAR call.
+        # SEC allows 10 req/sec; 0.4s/stock keeps us comfortably under that
+        # and polite to Yahoo too.
+        time.sleep(0.4)
 
     df = pd.DataFrame(records)
     print(f"Successfully fetched {len(df)} / {len(tickers)} tickers.")
@@ -397,8 +580,10 @@ def main():
 
     output_cols = [
         "ticker", "name", "sector", "industry", "price", "market_cap",
+        "quality_value_score",
         "durability_score", "valuation_score", "momentum_score",
-        "durability_snapshot", "durability_trend",
+        "durability_snapshot", "durability_trend", "durability_quality",
+        "piotroski_f", "altman_z", "accruals_ratio",
         "trailing_pe", "forward_pe", "price_to_book", "ev_to_ebitda", "peg_ratio", "price_to_fcf",
         "debt_to_equity", "current_ratio", "return_on_equity", "profit_margin", "free_cashflow",
         "revenue_cagr", "earnings_cagr", "revenue_growth_consistency",
@@ -407,6 +592,7 @@ def main():
         "s_debt_to_equity", "s_current_ratio", "s_roe", "s_profit_margin", "s_fcf_positive",
         "s_rev_cagr", "s_eps_cagr", "s_rev_consistency", "s_earnings_positive",
         "s_fcf_streak", "s_earnings_stability",
+        "s_piotroski", "s_altman", "s_accruals",
         "s_pe", "s_pb", "s_ev_ebitda", "s_peg", "s_p_fcf",
         "s_above_ma50", "s_above_ma200", "s_rsi", "s_return_3m", "s_return_6m", "s_near_52w_high",
         "fetched_at",
