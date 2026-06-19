@@ -325,6 +325,17 @@ function showDetail(ticker) {
       subMetricRow('Piotroski F-Score', s.piotroski_f != null ? s.piotroski_f + ' / 9' : '—', s.s_piotroski) +
       subMetricRow('Altman Z-Score', s.altman_z != null ? s.altman_z.toFixed(2) + (s.altman_z > 3 ? ' (safe)' : s.altman_z < 1.8 ? ' (distress)' : ' (grey)') : '—', s.s_altman) +
       subMetricRow('Accruals ratio', s.accruals_ratio != null ? (s.accruals_ratio * 100).toFixed(1) + '%' : '—', s.s_accruals) +
+      '<div style="font-size: 11px; color: var(--text-tertiary); margin: 8px 0 6px;">Recent trajectory (deterioration check)</div>' +
+      subMetricRow('Latest-year revenue growth', s.recent_rev_growth != null ? s.recent_rev_growth.toFixed(1) + '%' : '—', s.s_recent_rev) +
+      subMetricRow('Latest-year earnings growth', s.recent_earnings_growth != null ? s.recent_earnings_growth.toFixed(1) + '%' : '—', s.s_recent_eps) +
+      subMetricRow('Growth vs own history', s.rev_trend_breaking != null ? (s.rev_trend_breaking > 0 ? '+' : '') + s.rev_trend_breaking.toFixed(1) + ' pts' : '—', s.s_trend_breaking) +
+      subMetricRow('Earnings fell last year', s.earnings_declining_recent != null ? (s.earnings_declining_recent === 1 ? 'Yes ⚠' : 'No') : '—', s.earnings_declining_recent === 1 ? 0 : (s.earnings_declining_recent === 0 ? 100 : null)) +
+      '<div style="font-size: 11px; color: var(--text-tertiary); margin: 8px 0 6px;">Latest quarter (YoY, seasonally adjusted)' + (s.quarters_of_data ? ' (' + s.quarters_of_data + 'q data)' : '') + '</div>' +
+      subMetricRow('Quarterly revenue growth YoY', s.q_rev_growth_yoy != null ? s.q_rev_growth_yoy.toFixed(1) + '%' : '—', s.s_q_rev) +
+      subMetricRow('Quarterly earnings growth YoY', s.q_earnings_growth_yoy != null ? s.q_earnings_growth_yoy.toFixed(1) + '%' : '—', s.s_q_eps) +
+      subMetricRow('Quarterly growth decelerating', s.q_rev_decelerating != null ? (s.q_rev_decelerating === 1 ? 'Yes ⚠' : 'No') : '—', s.q_rev_decelerating === 1 ? 0 : (s.q_rev_decelerating === 0 ? 100 : null)) +
+      subMetricRow('Latest quarter a loss', s.q_earnings_negative != null ? (s.q_earnings_negative === 1 ? 'Yes ⚠' : 'No') : '—', s.q_earnings_negative === 1 ? 0 : (s.q_earnings_negative === 0 ? 100 : null)) +
+      subMetricRow('Margin compressing YoY', s.q_margin_compressing != null ? (s.q_margin_compressing === 1 ? 'Yes ⚠' : 'No') : '—', s.q_margin_compressing === 1 ? 0 : (s.q_margin_compressing === 0 ? 100 : null)) +
     '</div>' +
     '<div style="margin-bottom: 12px;">' +
       '<div style="font-size: 13px; font-weight: 500; margin-bottom: 4px;">Valuation breakdown</div>' +

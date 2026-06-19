@@ -230,6 +230,11 @@ def compute_multiyear_metrics(t: "yf.Ticker") -> dict:
         "fcf_positive_years": None,
         "earnings_stability": None,
         "years_of_data": None,
+        # recent-trajectory / deterioration signals
+        "recent_rev_growth": None,      # latest year revenue YoY %
+        "recent_earnings_growth": None, # latest year earnings YoY %
+        "rev_trend_breaking": None,     # latest growth vs historical avg growth (negative = decelerating)
+        "earnings_declining_recent": None,  # 1 if latest-year earnings fell, else 0
     }
     try:
         fin = t.financials  # annual income statement, columns = years (newest first)
@@ -259,6 +264,16 @@ def compute_multiyear_metrics(t: "yf.Ticker") -> dict:
             # consistency: fraction of year-over-year periods that grew
             ups = sum(1 for i in range(1, len(revenue)) if revenue[i] > revenue[i - 1])
             out["revenue_growth_consistency"] = ups / (len(revenue) - 1) * 100
+            # --- recent revenue trajectory: latest year YoY ---
+            if revenue[-2] and revenue[-2] != 0:
+                out["recent_rev_growth"] = (revenue[-1] / revenue[-2] - 1) * 100
+            # --- trend breaking: latest YoY vs avg of earlier YoY growths ---
+            yoy = [(revenue[i] / revenue[i - 1] - 1) * 100
+                   for i in range(1, len(revenue)) if revenue[i - 1]]
+            if len(yoy) >= 2:
+                latest_yoy = yoy[-1]
+                hist_avg = sum(yoy[:-1]) / len(yoy[:-1])
+                out["rev_trend_breaking"] = latest_yoy - hist_avg  # negative = decelerating vs own history
 
         if net_income and len(net_income) >= 2:
             out["earnings_positive_years"] = sum(1 for x in net_income if x > 0) / len(net_income) * 100
@@ -266,6 +281,10 @@ def compute_multiyear_metrics(t: "yf.Ticker") -> dict:
             n = len(net_income) - 1
             if first and first > 0 and last and last > 0:
                 out["earnings_cagr"] = ((last / first) ** (1 / n) - 1) * 100
+            # --- recent earnings trajectory: latest year YoY ---
+            if net_income[-2] and net_income[-2] != 0:
+                out["recent_earnings_growth"] = (net_income[-1] / abs(net_income[-2]) - 1) * 100 if net_income[-2] > 0 else None
+            out["earnings_declining_recent"] = 1 if net_income[-1] < net_income[-2] else 0
             # stability = 1 - (stdev/|mean|), clamped to 0-100; higher = steadier
             mean = sum(net_income) / len(net_income)
             if mean != 0:
@@ -278,6 +297,69 @@ def compute_multiyear_metrics(t: "yf.Ticker") -> dict:
 
     except Exception as e:
         print(f"[warn] multiyear metrics failed: {e}")
+
+    return out
+
+
+def compute_quarterly_metrics(t: "yf.Ticker") -> dict:
+    """
+    Quarterly trajectory signals — catch deterioration months before annual
+    statements reflect it. All comparisons are YoY-quarter (same quarter a
+    year earlier) to control for seasonality, which is the correct way to
+    read quarterly results and avoids false alarms from normal seasonal dips.
+    """
+    out = {
+        "q_rev_growth_yoy": None,        # latest quarter revenue vs same quarter last year
+        "q_earnings_growth_yoy": None,   # latest quarter net income vs same quarter last year
+        "q_rev_decelerating": None,      # 1 if latest QoQ-YoY growth < prior quarter's YoY growth
+        "q_earnings_negative": None,     # 1 if latest quarter posted a net loss
+        "q_margin_compressing": None,    # 1 if latest quarter net margin < year-ago quarter's
+        "quarters_of_data": None,
+    }
+    try:
+        qf = t.quarterly_financials  # columns = quarters, newest first
+        if qf is None or qf.empty:
+            return out
+
+        def qrow(df, *names):
+            for n in names:
+                if n in df.index:
+                    s = df.loc[n].dropna()
+                    if not s.empty:
+                        # newest-first in yfinance; keep that order here
+                        return list(s.values)
+            return None
+
+        revenue = qrow(qf, "Total Revenue", "TotalRevenue", "Operating Revenue")
+        net_income = qrow(qf, "Net Income", "NetIncome", "Net Income Common Stockholders")
+
+        # Need at least 5 quarters to do YoY-quarter comparisons for the
+        # latest two quarters (q0 vs q4, q1 vs q5).
+        if revenue:
+            out["quarters_of_data"] = len(revenue)
+
+        # YoY-quarter revenue growth: latest quarter (index 0) vs 4 quarters ago (index 4)
+        if revenue and len(revenue) >= 5 and revenue[4]:
+            out["q_rev_growth_yoy"] = (revenue[0] / revenue[4] - 1) * 100
+            # prior quarter's YoY growth: index 1 vs index 5 (needs >=6)
+            if len(revenue) >= 6 and revenue[5]:
+                prev_yoy = (revenue[1] / revenue[5] - 1) * 100
+                out["q_rev_decelerating"] = 1 if out["q_rev_growth_yoy"] < prev_yoy else 0
+
+        if net_income and len(net_income) >= 5 and net_income[4]:
+            if net_income[4] > 0:
+                out["q_earnings_growth_yoy"] = (net_income[0] / abs(net_income[4]) - 1) * 100
+            out["q_earnings_negative"] = 1 if net_income[0] < 0 else 0
+
+        # Margin compression: latest quarter net margin vs year-ago quarter
+        if (revenue and net_income and len(revenue) >= 5 and len(net_income) >= 5
+                and revenue[0] and revenue[4]):
+            margin_now = net_income[0] / revenue[0]
+            margin_year_ago = net_income[4] / revenue[4]
+            out["q_margin_compressing"] = 1 if margin_now < margin_year_ago else 0
+
+    except Exception as e:
+        print(f"[warn] quarterly metrics failed: {e}")
 
     return out
 
@@ -323,6 +405,9 @@ def fetch_ticker_raw(ticker: str) -> dict | None:
         # Multi-year durability signals (Trendlyne models earnings "over time")
         my = compute_multiyear_metrics(t)
 
+        # Quarterly trajectory signals (catch deterioration early, YoY-quarter)
+        q = compute_quarterly_metrics(t)
+
         # SEC EDGAR quality scores (Piotroski F, Altman Z, accruals)
         mc_for_edgar = safe_get(info, "marketCap")
         edgar = compute_edgar_scores(ticker, mc_for_edgar)
@@ -363,6 +448,18 @@ def fetch_ticker_raw(ticker: str) -> dict | None:
             "fcf_positive_years": my["fcf_positive_years"],
             "earnings_stability": my["earnings_stability"],
             "years_of_data": my["years_of_data"],
+            "recent_rev_growth": my["recent_rev_growth"],
+            "recent_earnings_growth": my["recent_earnings_growth"],
+            "rev_trend_breaking": my["rev_trend_breaking"],
+            "earnings_declining_recent": my["earnings_declining_recent"],
+
+            # Quarterly trajectory (YoY-quarter, seasonally correct)
+            "q_rev_growth_yoy": q["q_rev_growth_yoy"],
+            "q_earnings_growth_yoy": q["q_earnings_growth_yoy"],
+            "q_rev_decelerating": q["q_rev_decelerating"],
+            "q_earnings_negative": q["q_earnings_negative"],
+            "q_margin_compressing": q["q_margin_compressing"],
+            "quarters_of_data": q["quarters_of_data"],
 
             # SEC EDGAR quality scores
             "piotroski_f": edgar["piotroski_f"],
@@ -474,19 +571,68 @@ def compute_scores(df: pd.DataFrame) -> pd.DataFrame:
     quality_components = ["s_piotroski", "s_altman", "s_accruals"]
     df["durability_quality"] = df[quality_components].mean(axis=1, skipna=True)
 
-    # --- combine: 35% snapshot, 40% multi-year trend, 25% EDGAR quality ---
+    # --- (d) recent-trajectory sub-scores (catches deterioration a value
+    #         trap shows before the multi-year history reflects it) ---
+    df["s_recent_rev"] = percentile_rank_series(df["recent_rev_growth"], higher_is_better=True)
+    df["s_recent_eps"] = percentile_rank_series(df["recent_earnings_growth"], higher_is_better=True)
+    df["s_trend_breaking"] = percentile_rank_series(df["rev_trend_breaking"], higher_is_better=True)
+    # quarterly YoY growth sub-scores (earliest signal)
+    df["s_q_rev"] = percentile_rank_series(df["q_rev_growth_yoy"], higher_is_better=True)
+    df["s_q_eps"] = percentile_rank_series(df["q_earnings_growth_yoy"], higher_is_better=True)
+    recent_components = ["s_recent_rev", "s_recent_eps", "s_trend_breaking", "s_q_rev", "s_q_eps"]
+    df["durability_recent"] = df[recent_components].mean(axis=1, skipna=True)
+
+    # --- combine: 25% snapshot, 30% multi-year trend, 20% EDGAR quality,
+    #     25% recent trajectory. Recent trajectory now carries real weight so
+    #     a deteriorating-but-historically-strong name (value trap) is pulled
+    #     down rather than rewarded for its past. ---
     def blend_durability(row):
         parts, weights = [], []
         if pd.notnull(row["durability_snapshot"]):
-            parts.append(row["durability_snapshot"]); weights.append(0.35)
+            parts.append(row["durability_snapshot"]); weights.append(0.25)
         if pd.notnull(row["durability_trend"]):
-            parts.append(row["durability_trend"]); weights.append(0.40)
+            parts.append(row["durability_trend"]); weights.append(0.30)
         if pd.notnull(row["durability_quality"]):
-            parts.append(row["durability_quality"]); weights.append(0.25)
+            parts.append(row["durability_quality"]); weights.append(0.20)
+        if pd.notnull(row["durability_recent"]):
+            parts.append(row["durability_recent"]); weights.append(0.25)
         if not parts:
             return float("nan")
-        wsum = sum(weights)
-        return sum(p * w for p, w in zip(parts, weights)) / wsum
+        base = sum(p * w for p, w in zip(parts, weights)) / sum(weights)
+
+        # --- explicit deterioration penalty ---
+        # Stacks hard red flags that a value trap exhibits. Each applies a
+        # multiplicative haircut so multiple concurrent red flags compound,
+        # mirroring how Trendlyne collapses durability for such names.
+        # Quarterly flags are included because they're the earliest warning.
+        penalty = 1.0
+        if row.get("earnings_declining_recent") == 1:
+            penalty *= 0.85  # latest fiscal-year earnings fell
+        rb = row.get("rev_trend_breaking")
+        if rb is not None and not (isinstance(rb, float) and math.isnan(rb)) and rb < -10:
+            penalty *= 0.85  # annual revenue growth decelerating sharply vs own history
+        reg = row.get("recent_earnings_growth")
+        if reg is not None and not (isinstance(reg, float) and math.isnan(reg)) and reg < 0:
+            penalty *= 0.85  # annual earnings shrinking outright
+        pf = row.get("pct_from_52w_high")
+        if pf is not None and not (isinstance(pf, float) and math.isnan(pf)) and pf < -35:
+            penalty *= 0.90  # market pricing in trouble (deep below 52w high)
+        # --- quarterly red flags (earliest signals) ---
+        qeg = row.get("q_earnings_growth_yoy")
+        if qeg is not None and not (isinstance(qeg, float) and math.isnan(qeg)) and qeg < 0:
+            penalty *= 0.88  # latest quarter earnings down YoY
+        qrg = row.get("q_rev_growth_yoy")
+        if qrg is not None and not (isinstance(qrg, float) and math.isnan(qrg)) and qrg < 0:
+            penalty *= 0.90  # latest quarter revenue down YoY
+        if row.get("q_earnings_negative") == 1:
+            penalty *= 0.88  # latest quarter posted a loss
+        if row.get("q_margin_compressing") == 1:
+            penalty *= 0.93  # net margin compressing YoY
+        # floor the penalty so a single bad year can't zero out an otherwise
+        # strong company (avoids over-penalizing cyclical troughs)
+        penalty = max(penalty, 0.30)
+
+        return base * penalty
 
     df["durability_score"] = df.apply(blend_durability, axis=1).round(1)
 
@@ -582,16 +728,20 @@ def main():
         "ticker", "name", "sector", "industry", "price", "market_cap",
         "quality_value_score",
         "durability_score", "valuation_score", "momentum_score",
-        "durability_snapshot", "durability_trend", "durability_quality",
+        "durability_snapshot", "durability_trend", "durability_quality", "durability_recent",
         "piotroski_f", "altman_z", "accruals_ratio",
         "trailing_pe", "forward_pe", "price_to_book", "ev_to_ebitda", "peg_ratio", "price_to_fcf",
         "debt_to_equity", "current_ratio", "return_on_equity", "profit_margin", "free_cashflow",
         "revenue_cagr", "earnings_cagr", "revenue_growth_consistency",
         "earnings_positive_years", "fcf_positive_years", "earnings_stability", "years_of_data",
+        "recent_rev_growth", "recent_earnings_growth", "rev_trend_breaking", "earnings_declining_recent",
+        "q_rev_growth_yoy", "q_earnings_growth_yoy", "q_rev_decelerating",
+        "q_earnings_negative", "q_margin_compressing", "quarters_of_data",
         "ma50", "ma200", "rsi14", "return_3m", "return_6m", "pct_from_52w_high",
         "s_debt_to_equity", "s_current_ratio", "s_roe", "s_profit_margin", "s_fcf_positive",
         "s_rev_cagr", "s_eps_cagr", "s_rev_consistency", "s_earnings_positive",
         "s_fcf_streak", "s_earnings_stability",
+        "s_recent_rev", "s_recent_eps", "s_trend_breaking", "s_q_rev", "s_q_eps",
         "s_piotroski", "s_altman", "s_accruals",
         "s_pe", "s_pb", "s_ev_ebitda", "s_peg", "s_p_fcf",
         "s_above_ma50", "s_above_ma200", "s_rsi", "s_return_3m", "s_return_6m", "s_near_52w_high",
